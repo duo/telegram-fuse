@@ -1,5 +1,5 @@
 use grammers_client::types::Chat;
-use grammers_client::{Client, InputMessage};
+use grammers_client::Client;
 use std::ffi::OsStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,8 +23,6 @@ const DB_FILE: &str = "sqlite://fuse.db?mode=rwc";
 pub struct Vfs {
     db: Pool<Sqlite>,
     cache: file::DiskCache,
-    client: Client,
-    chat: Chat,
 }
 
 impl Vfs {
@@ -33,9 +31,7 @@ impl Vfs {
 
         let this = Arc::new(Self {
             db: SqlitePool::connect(DB_FILE).await?,
-            cache: file::DiskCache::new(),
-            client,
-            chat: Chat::User(me),
+            cache: file::DiskCache::new(client, Chat::User(me)),
         });
 
         this.init_db().await?;
@@ -93,9 +89,8 @@ impl Vfs {
     }
 
     pub async fn open_file(&self, ino: u64, _write: bool) -> Result<u64> {
-        if let Some(_) = self.get_inode(ino).await? {
-            // TODO: download file from remote, insert into diskcache
-            let fh = 0;
+        if let Some(attr) = self.get_inode(ino).await? {
+            let fh = self.cache.open(attr.remote_id).await?;
             log::trace!(target: "vfs::file", "open_file: ino={} fh={}", ino, fh);
             Ok(fh)
         } else {
@@ -117,17 +112,7 @@ impl Vfs {
         let attr: InodeAttr;
         match lookup_result {
             None => {
-                let buf = vec![0];
-                let mut stream = std::io::Cursor::new(buf);
-                let upload_file = self
-                    .client
-                    .upload_stream(&mut stream, 1, String::from(name))
-                    .await?;
-                let msg = self
-                    .client
-                    .send_message(&self.chat, InputMessage::text("").file(upload_file))
-                    .await?;
-                let remote_id = msg.id();
+                let (_, remote_id) = self.cache.open_create_empty(name).await?;
 
                 attr = self
                     .add_inode(
@@ -154,8 +139,6 @@ impl Vfs {
             }
         }
 
-        self.cache.insert_empty(attr.remote_id).await?;
-
         log::trace!(
             target: "vfs::file",
             "open_create_file: ino={} name={}",
@@ -168,27 +151,9 @@ impl Vfs {
 
     pub async fn close_file(&self, ino: u64, fh: u64) -> Result<()> {
         if let Some(attr) = self.get_inode(ino).await? {
-            if let Some(file) = self.cache.get(&attr.remote_id) {
-                let ret = FileCache::read_all(&file).await?;
-                if ret.len() > 0 {
-                    let mut stream = std::io::Cursor::new(ret);
-                    let upload_file = self
-                        .client
-                        .upload_stream(&mut stream, 1, attr.name.clone())
-                        .await?;
-                    self.client
-                        .edit_message(
-                            &self.chat,
-                            attr.remote_id,
-                            InputMessage::text(attr.name.clone()).file(upload_file),
-                        )
-                        .await?;
-                }
-                log::trace!(target: "vfs::file", "close_file: ino={} fh={}", ino, fh);
-                Ok(())
-            } else {
-                Err(error::Error::NotFound)
-            }
+            log::trace!(target: "vfs::file", "close_file: ino={} fh={}", ino, fh);
+            self.cache.sync(&attr.remote_id, &attr.name).await?;
+            Ok(())
         } else {
             Err(error::Error::NotFound)
         }
