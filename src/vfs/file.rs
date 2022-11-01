@@ -14,7 +14,7 @@ use tokio::{
     sync::Mutex,
 };
 
-const CACHE_SIZE: usize = 128;
+const CACHE_SIZE: usize = 1024;
 
 struct FileCacheState {
     file_size: u64,
@@ -130,6 +130,10 @@ impl DiskCache {
         self.files.lock().unwrap().get_mut(remote_id).cloned()
     }
 
+    pub fn remove(&self, remote_id: &i32) {
+        self.files.lock().unwrap().pop(remote_id);
+    }
+
     pub async fn open(&self, remote_id: i32) -> Result<u64> {
         if let Some(_) = self.get(&remote_id) {
             return Ok(0);
@@ -192,6 +196,18 @@ impl DiskCache {
         let file = FileCache::new(remote_id, tmp_file.into(), 0, FileCacheStatus::Ready);
         files.put(remote_id, file.clone());
         Ok(file)
+    }
+
+    pub async fn delete(&self, remote_id: i32) -> Result<()> {
+        self.remove(&remote_id);
+
+        if let Err(_) = self
+            .client
+            .delete_messages(&self.chat, &vec![remote_id])
+            .await
+        {}
+
+        Ok(())
     }
 
     pub async fn sync(&self, remote_id: &i32, name: &str) -> Result<()> {

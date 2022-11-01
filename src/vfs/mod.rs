@@ -151,8 +151,9 @@ impl Vfs {
 
     pub async fn close_file(&self, ino: u64, fh: u64) -> Result<()> {
         if let Some(attr) = self.get_inode(ino).await? {
-            log::trace!(target: "vfs::file", "close_file: ino={} fh={}", ino, fh);
             self.cache.sync(&attr.remote_id, &attr.name).await?;
+            log::trace!(target: "vfs::file", "close_file: ino={} fh={}", ino, fh);
+
             Ok(())
         } else {
             Err(error::Error::NotFound)
@@ -244,6 +245,7 @@ impl Vfs {
         match lookup_result {
             None => Err(error::Error::NotFound),
             Some(attr) => {
+                self.cache.delete(attr.remote_id).await?;
                 self.delete_inode(attr.ino, parent_ino as u32, name).await?;
 
                 log::trace!(
@@ -261,8 +263,6 @@ impl Vfs {
         if let Some(attr) = self.get_inode(ino).await? {
             if let Some(file) = self.cache.get(&attr.remote_id) {
                 let (new_size, mtime) = FileCache::write(&file, offset, data).await?;
-
-                // TODO: upload to telegram?
 
                 self.update_inode_attr(ino, new_size, mtime).await?;
 
@@ -282,9 +282,14 @@ impl Vfs {
     }
 
     pub async fn sync_file(&self, ino: u64) -> Result<()> {
-        // TODO: upload to telegram?
-        log::trace!(target: "vfs::file", "sync_file: ino={}", ino);
-        Ok(())
+        if let Some(attr) = self.get_inode(ino).await? {
+            self.cache.sync(&attr.remote_id, &attr.name).await?;
+            log::trace!(target: "vfs::file", "sync_file: ino={}", ino);
+
+            Ok(())
+        } else {
+            Err(error::Error::NotFound)
+        }
     }
 
     async fn init_db(&self) -> anyhow::Result<()> {
