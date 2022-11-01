@@ -2,9 +2,13 @@ use crate::vfs;
 
 use fuser::{
     KernelConfig, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
-    ReplyOpen, ReplyStatfs, ReplyWrite, Request,
+    ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow,
 };
-use std::{ffi::OsStr, sync::Arc, time::Duration};
+use std::{
+    ffi::OsStr,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 const GENERATION: u64 = 0;
 const NAME_LEN: u32 = 256;
@@ -300,6 +304,36 @@ impl fuser::Filesystem for Filesystem {
             match inner.vfs.write_file(ino, fh, offset as u64, &data).await {
                 // > Write should return exactly the number of bytes requested except on error.
                 Ok(()) => reply.written(data.len() as u32),
+                Err(err) => reply.error(err.into_c_err()),
+            }
+        });
+    }
+
+    fn setattr(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        _fh: Option<u64>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<u32>,
+        reply: ReplyAttr,
+    ) {
+        self.spawn(|inner| async move {
+            let mtime = mtime.map(|time| match time {
+                TimeOrNow::SpecificTime(time) => time,
+                TimeOrNow::Now => SystemTime::now(),
+            });
+            match inner.vfs.set_attr(ino, size, mtime).await {
+                Ok(attr) => reply.attr(&TTL, &attr.get_file_attr()),
                 Err(err) => reply.error(err.into_c_err()),
             }
         });

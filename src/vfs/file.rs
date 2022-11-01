@@ -1,6 +1,7 @@
 use crate::vfs::{Error, Result};
 
 use bytes::Bytes;
+use grammers_client::types::media::Uploaded;
 use grammers_client::types::Chat;
 use grammers_client::{Client, InputMessage};
 use lru::LruCache;
@@ -88,13 +89,25 @@ impl FileCache {
             FileCacheStatus::Ready => {}
             FileCacheStatus::Dirty => {
                 let size = guard.file_size as usize;
-                let mut buf = vec![0u8; size];
-                guard.file.seek(SeekFrom::Start(0)).await?;
-                guard.file.read_exact(&mut buf).await?;
-                let mut stream = std::io::Cursor::new(buf);
-                let uploaded_file = client
-                    .upload_stream(&mut stream, size, String::from(name))
-                    .await?;
+
+                let uploaded_file: Uploaded;
+                if size == 0 {
+                    let buf = vec![0];
+                    let mut stream = std::io::Cursor::new(buf);
+
+                    uploaded_file = client
+                        .upload_stream(&mut stream, 1, String::from(name))
+                        .await?;
+                } else {
+                    let mut buf = vec![0u8; size];
+                    guard.file.seek(SeekFrom::Start(0)).await?;
+                    guard.file.read_exact(&mut buf).await?;
+                    let mut stream = std::io::Cursor::new(buf);
+                    uploaded_file = client
+                        .upload_stream(&mut stream, size, String::from(name))
+                        .await?;
+                }
+
                 client
                     .edit_message(
                         chat,
@@ -173,29 +186,9 @@ impl DiskCache {
     }
 
     pub async fn open_create_empty(&self, name: &str) -> Result<(u64, i32)> {
-        let buf = vec![0];
-        let mut stream = std::io::Cursor::new(buf);
+        let remote_id = self.upload_empty_file(name, None).await?;
 
-        let upload_file = self
-            .client
-            .upload_stream(&mut stream, 1, String::from(name))
-            .await?;
-        let msg = self
-            .client
-            .send_message(&self.chat, InputMessage::text("").file(upload_file))
-            .await?;
-
-        self.insert_empty(msg.id()).await?;
-
-        Ok((0, msg.id()))
-    }
-
-    async fn insert_empty(&self, remote_id: i32) -> Result<Arc<FileCache>> {
-        let tmp_file = tempfile::tempfile_in(&self.dir)?;
-        let mut files = self.files.lock().unwrap();
-        let file = FileCache::new(remote_id, tmp_file.into(), 0, FileCacheStatus::Ready);
-        files.put(remote_id, file.clone());
-        Ok(file)
+        Ok((0, remote_id))
     }
 
     pub async fn delete(&self, remote_id: i32) -> Result<()> {
@@ -210,6 +203,29 @@ impl DiskCache {
         Ok(())
     }
 
+    pub async fn truncate_file(&self, remote_id: i32, new_size: u64, name: &str) -> Result<()> {
+        if let None = self.get(&remote_id) {
+            if new_size == 0 {
+                self.upload_empty_file(name, Some(remote_id)).await?;
+                return Ok(());
+            } else {
+                self.open(remote_id).await?;
+            }
+        }
+
+        if let Some(file) = self.get(&remote_id) {
+            {
+                let mut guard = file.state.lock().await;
+                guard.file_size = new_size;
+                guard.file.set_len(new_size).await.unwrap();
+                guard.status = FileCacheStatus::Dirty;
+            }
+            FileCache::sync(&file, name, self.client.clone(), &self.chat).await?;
+        }
+
+        Ok(())
+    }
+
     pub async fn sync(&self, remote_id: &i32, name: &str) -> Result<()> {
         if let Some(file) = self.get(remote_id) {
             FileCache::sync(&file, name, self.client.clone(), &self.chat).await?;
@@ -217,6 +233,43 @@ impl DiskCache {
             Ok(())
         } else {
             Err(Error::NotFound)
+        }
+    }
+
+    async fn insert_empty(&self, remote_id: i32) -> Result<Arc<FileCache>> {
+        let tmp_file = tempfile::tempfile_in(&self.dir)?;
+        let mut files = self.files.lock().unwrap();
+        let file = FileCache::new(remote_id, tmp_file.into(), 0, FileCacheStatus::Ready);
+        files.put(remote_id, file.clone());
+        Ok(file)
+    }
+
+    async fn upload_empty_file(&self, name: &str, remote_id: Option<i32>) -> Result<i32> {
+        let buf = vec![0];
+        let mut stream = std::io::Cursor::new(buf);
+
+        let uploaded_file = self
+            .client
+            .upload_stream(&mut stream, 1, String::from(name))
+            .await?;
+
+        if let Some(id) = remote_id {
+            self.client
+                .edit_message(&self.chat, id, InputMessage::text("").file(uploaded_file))
+                .await?;
+
+            self.insert_empty(id).await?;
+
+            Ok(id)
+        } else {
+            let msg = self
+                .client
+                .send_message(&self.chat, InputMessage::text("").file(uploaded_file))
+                .await?;
+
+            self.insert_empty(msg.id()).await?;
+
+            Ok(msg.id())
         }
     }
 }

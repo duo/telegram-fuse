@@ -281,6 +281,36 @@ impl Vfs {
         }
     }
 
+    pub async fn set_attr(
+        &self,
+        ino: u64,
+        size: Option<u64>,
+        mtime: Option<SystemTime>,
+    ) -> Result<InodeAttr> {
+        if let Some(mut attr) = self.get_inode(ino).await? {
+            match (size, mtime) {
+                (Some(new_size), _) if attr.size != new_size as u32 => {
+                    let mtime = mtime.unwrap_or_else(SystemTime::now);
+                    attr.mtime = mtime.duration_since(UNIX_EPOCH).unwrap().as_secs() as u32;
+                    attr.size = new_size as u32;
+                    self.cache
+                        .truncate_file(attr.remote_id, new_size, &attr.name)
+                        .await?;
+                }
+                (_, Some(mtime)) => {
+                    attr.mtime = mtime.duration_since(UNIX_EPOCH).unwrap().as_secs() as u32;
+                }
+                (_, None) => {}
+            }
+            self.update_inode_attr(ino, attr.size as u64, attr.mtime)
+                .await?;
+
+            Ok(attr)
+        } else {
+            Err(error::Error::NotFound)
+        }
+    }
+
     pub async fn sync_file(&self, ino: u64) -> Result<()> {
         if let Some(attr) = self.get_inode(ino).await? {
             self.cache.sync(&attr.remote_id, &attr.name).await?;
