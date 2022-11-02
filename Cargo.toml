@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.66"
 bytes = "1.2.1"
+clap = { version = "4.0.18", features = ["derive"] }
 env_logger = "0.9.1"
 fuser = "0.11.1"
 grammers-client = "0.4.0"

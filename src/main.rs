@@ -1,9 +1,10 @@
 use anyhow::{Context as _, Result};
+use clap::Parser;
 use fuser::MountOption;
 use grammers_client::{Client, Config, SignInError};
 use grammers_session::Session;
-use std::env;
 use std::io::{self, BufRead as _, Write as _};
+use std::path::PathBuf;
 use tokio::task;
 
 mod fuse_fs;
@@ -22,23 +23,20 @@ async fn main() -> Result<()> {
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    async_main().await
+    let args = Args::parse();
+
+    async_main(args).await
 }
 
-async fn async_main() -> Result<()> {
-    let api_id: i32 = env::args_os()
-        .nth(1)
-        .unwrap()
-        .to_string_lossy()
-        .parse()
-        .unwrap();
-    let api_hash: String = String::from(env::args_os().nth(2).unwrap().to_str().unwrap());
+async fn async_main(args: Args) -> Result<()> {
+    let app_id = args.app_id;
+    let app_hash = args.app_hash;
 
     log::info!("Connecting to Telegram...");
     let client = Client::connect(Config {
         session: Session::load_file_or_create(SESSION_FILE)?,
-        api_id,
-        api_hash: api_hash.clone(),
+        api_id: app_id,
+        api_hash: app_hash.clone(),
         params: Default::default(),
     })
     .await?;
@@ -47,7 +45,7 @@ async fn async_main() -> Result<()> {
     if !client.is_authorized().await? {
         log::info!("Signing in...");
         let phone = prompt("Enter your phone number (international format): ")?;
-        let token = client.request_login_code(&phone, api_id, &api_hash).await?;
+        let token = client.request_login_code(&phone, app_id, &app_hash).await?;
         let code = prompt("Enter the code you received: ")?;
         let signed_in = client.sign_in(&token, &code).await;
         match signed_in {
@@ -84,7 +82,6 @@ async fn async_main() -> Result<()> {
 
     log::info!("Mounting...");
     let fs = fuse_fs::Filesystem::new(vfs);
-    let mountpoint = env::args_os().nth(3).unwrap();
     let fuse_options = [
         MountOption::FSName("telegram".into()),
         MountOption::DefaultPermissions,
@@ -94,7 +91,8 @@ async fn async_main() -> Result<()> {
         MountOption::RW,
     ];
 
-    tokio::task::spawn_blocking(move || fuser::mount2(fs, mountpoint, &fuse_options)).await??;
+    tokio::task::spawn_blocking(move || fuser::mount2(fs, &args.mount_point, &fuse_options))
+        .await??;
 
     Ok(())
 }
@@ -111,4 +109,15 @@ fn prompt(message: &str) -> Result<String> {
     let mut line = String::new();
     stdin.read_line(&mut line)?;
     Ok(line)
+}
+
+#[derive(Debug, Parser)]
+struct Args {
+    #[arg(long)]
+    app_id: i32,
+
+    #[arg(long)]
+    app_hash: String,
+
+    mount_point: PathBuf,
 }
