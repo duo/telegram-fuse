@@ -214,6 +214,77 @@ impl Vfs {
         }
     }
 
+    pub async fn rename(
+        &self,
+        parent_ino: u64,
+        name: &OsStr,
+        new_parent_ino: u64,
+        new_name: &OsStr,
+    ) -> Result<()> {
+        if parent_ino == new_parent_ino && name == new_name {
+            return Ok(());
+        }
+
+        let old_entry = match self.get_entry(parent_ino as u32, name).await? {
+            Some(e) => e,
+            None => {
+                return Err(error::Error::NotFound);
+            }
+        };
+        let new_entry = self.get_entry(new_parent_ino as u32, new_name).await?;
+
+        if let Some(dest_entry) = &new_entry {
+            if dest_entry.file_type != old_entry.file_type {
+                match dest_entry.file_type {
+                    FileType::Directory => {
+                        return Err(error::Error::IsADirectory);
+                    }
+                    FileType::RegularFile => {
+                        return Err(error::Error::NotADirectory);
+                    }
+                    _ => {
+                        return Err(error::Error::InvalidFileType(dest_entry.file_type));
+                    }
+                }
+            }
+            if dest_entry.file_type == FileType::Directory {
+                if !self.is_directory_empty(dest_entry.child_ino).await? {
+                    return Err(error::Error::DirectoryNotEmpty);
+                }
+            }
+
+            let remote_id = match self.get_inode(dest_entry.child_ino as u64).await? {
+                Some(attr) => attr.remote_id,
+                None => 0,
+            };
+
+            self.delete_inode(
+                dest_entry.child_ino,
+                dest_entry.parent_ino,
+                &dest_entry.name,
+            )
+            .await?;
+
+            if remote_id != 0 {
+                self.cache.delete(remote_id).await?;
+            }
+        }
+
+        self.move_entry(&old_entry, new_parent_ino, new_name)
+            .await?;
+
+        log::debug!(
+            "Moved file {} from {}/{:?} to {}/{:?}",
+            old_entry.child_ino,
+            parent_ino,
+            name,
+            new_parent_ino,
+            new_name,
+        );
+
+        Ok(())
+    }
+
     pub async fn remove_dir(&self, parent_ino: u64, name: &OsStr) -> Result<()> {
         let lookup_result = self.lookup_inode(parent_ino, name).await?;
         let name = name.to_str().unwrap();
@@ -427,6 +498,30 @@ impl Vfs {
         Ok(rec)
     }
 
+    async fn get_entry(&self, parent_ino: u32, child_name: &OsStr) -> Result<Option<DirEntry>> {
+        let mut conn = self.db.acquire().await?;
+
+        let sql = "
+            SELECT child_ino, file_type, name
+            FROM node_tree
+            WHERE parent_ino=$1 AND name=$2
+        ";
+
+        let rec = sqlx::query(sql)
+            .bind(parent_ino as u32)
+            .bind(child_name.to_str().unwrap())
+            .map(|row| DirEntry {
+                parent_ino: parent_ino,
+                child_ino: row.get(0),
+                file_type: inode::convert_file_type(row.get(1)),
+                name: row.get(2),
+            })
+            .fetch_optional(&mut conn)
+            .await?;
+
+        Ok(rec)
+    }
+
     async fn get_entries(&self, ino: u32) -> Result<Vec<DirEntry>> {
         let mut conn = self.db.acquire().await?;
 
@@ -611,8 +706,68 @@ impl Vfs {
             .bind(size as u32)
             .bind((size as u32 + BLOCK_SIZE - 1) / BLOCK_SIZE)
             .bind(mtime)
-            .fetch_optional(&mut conn)
+            .execute(&mut conn)
             .await?;
+
+        Ok(())
+    }
+
+    async fn move_entry(
+        &self,
+        old_entry: &DirEntry,
+        new_parent_ino: u64,
+        new_name: &OsStr,
+    ) -> Result<()> {
+        let mut conn = self.db.acquire().await?;
+
+        let sql = "
+            UPDATE node_tree
+            SET parent_ino=$3, name=$4
+            WHERE parent_ino=$1 AND name=$2
+        ";
+
+        sqlx::query(sql)
+            .bind(old_entry.parent_ino)
+            .bind(old_entry.name.clone())
+            .bind(new_parent_ino as u32)
+            .bind(new_name.to_str().unwrap())
+            .execute(&mut conn)
+            .await?;
+
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+
+        let sql = "
+            UPDATE node
+            SET ctime=$2
+            WHERE ino=$1
+        ";
+        sqlx::query(sql)
+            .bind(old_entry.child_ino)
+            .bind(time)
+            .execute(&mut conn)
+            .await?;
+
+        let sql = "
+            UPDATE node
+            SET ctime=$2, mtime=$2
+            WHERE ino=$1
+        ";
+        sqlx::query(sql)
+            .bind(old_entry.parent_ino)
+            .bind(time)
+            .execute(&mut conn)
+            .await?;
+
+        if old_entry.parent_ino != new_parent_ino as u32 {
+            sqlx::query(sql)
+                .bind(new_parent_ino as u32)
+                .bind(time)
+                .execute(&mut conn)
+                .await?;
+        }
 
         Ok(())
     }

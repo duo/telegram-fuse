@@ -252,8 +252,6 @@ impl fuser::Filesystem for Filesystem {
         });
     }
 
-    // TODO
-    /*
     fn rename(
         &mut self,
         _req: &Request,
@@ -264,8 +262,15 @@ impl fuser::Filesystem for Filesystem {
         _flags: u32,
         reply: ReplyEmpty,
     ) {
+        let name = name.to_owned();
+        let newname = newname.to_owned();
+        self.spawn(|inner| async move {
+            match inner.vfs.rename(parent, &name, newparent, &newname).await {
+                Ok(_) => reply.ok(),
+                Err(err) => reply.error(err.into_c_err()),
+            }
+        });
     }
-    */
 
     fn rmdir(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let name = name.to_owned();

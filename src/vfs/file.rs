@@ -158,28 +158,31 @@ impl DiskCache {
             .await?;
 
         if let Some(msg) = msgs.into_iter().nth(0) {
-            let raw_msg = msg.unwrap();
-            if raw_msg.text().is_empty() {
-                self.insert_empty(raw_msg.id()).await?;
-            } else if let Some(media) = raw_msg.media() {
-                let tmp_file = tempfile::tempfile_in(&self.dir)?;
-                let mut file: tokio::fs::File = tmp_file.into();
+            if let Some(raw_msg) = msg {
+                if raw_msg.text().is_empty() {
+                    self.insert_empty(raw_msg.id()).await?;
+                } else if let Some(media) = raw_msg.media() {
+                    let tmp_file = tempfile::tempfile_in(&self.dir)?;
+                    let mut file: tokio::fs::File = tmp_file.into();
 
-                let mut size = 0;
-                let mut download = self.client.iter_download(&media);
-                while let Some(chunk) = download.next().await? {
-                    size += chunk.len();
-                    file.write_all(&chunk).await?;
+                    let mut size = 0;
+                    let mut download = self.client.iter_download(&media);
+                    while let Some(chunk) = download.next().await? {
+                        size += chunk.len();
+                        file.write_all(&chunk).await?;
+                    }
+
+                    let mut files = self.files.lock().unwrap();
+                    let file = FileCache::new(remote_id, file, size as u64, FileCacheStatus::Ready);
+                    files.put(remote_id, file.clone());
+                } else {
+                    // TODO: another error?
+                    return Err(Error::NotFound);
                 }
-
-                let mut files = self.files.lock().unwrap();
-                let file = FileCache::new(remote_id, file, size as u64, FileCacheStatus::Ready);
-                files.put(remote_id, file.clone());
+                Ok(0)
             } else {
-                // TODO: another error?
-                return Err(Error::NotFound);
+                Err(Error::NotFound)
             }
-            Ok(0)
         } else {
             Err(Error::NotFound)
         }
