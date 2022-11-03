@@ -376,6 +376,12 @@ impl Vfs {
             self.update_inode_attr(ino, attr.size as u64, attr.mtime)
                 .await?;
 
+            log::trace!(
+                target: "vfs::file",
+                "truncate_file: ino={} new_size={:?} new_mtime={:?} ret_attr={:?}",
+                ino, size, mtime, attr,
+            );
+
             Ok(attr)
         } else {
             Err(error::Error::NotFound)
@@ -400,7 +406,7 @@ impl Vfs {
         {
             let sql = "
                 CREATE TABLE IF NOT EXISTS node (
-                    ino INTEGER PRIMARY KEY,
+                    ino INTEGER PRIMARY KEY AUTOINCREMENT,
                     size INTEGER DEFAULT 0 NOT NULL,
                     blocks INTEGER DEFAULT 0,
                     atime INTEGER,
