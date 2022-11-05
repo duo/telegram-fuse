@@ -16,15 +16,17 @@ use inode::{DirEntry, InodeAttr, InodeTree};
 pub struct Vfs {
     inode_tree: InodeTree,
     cache: file::DiskCache,
+    async_flush: bool,
 }
 
 impl Vfs {
-    pub async fn new(client: Client) -> anyhow::Result<Arc<Self>> {
+    pub async fn new(client: Client, async_flush: bool) -> anyhow::Result<Arc<Self>> {
         let me = client.get_me().await?;
 
         let this = Arc::new(Self {
             inode_tree: InodeTree::new().await?,
             cache: file::DiskCache::new(client, Chat::User(me)),
+            async_flush,
         });
 
         Ok(this)
@@ -136,7 +138,9 @@ impl Vfs {
 
     pub async fn close_file(&self, ino: u64, fh: u64) -> Result<()> {
         if let Some(attr) = self.inode_tree.get(ino).await? {
-            self.cache.flush(attr.remote_id, &attr.name, false).await?;
+            self.cache
+                .flush(attr.remote_id, &attr.name, !self.async_flush)
+                .await?;
             log::trace!(target: "vfs::file", "close_file: ino={} fh={}", ino, fh);
 
             Ok(())

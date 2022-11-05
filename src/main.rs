@@ -76,7 +76,11 @@ async fn async_main(args: Args) -> Result<()> {
     let client_handle = client.clone();
     task::spawn(async move { client.run_until_disconnected().await });
 
-    let vfs = vfs::Vfs::new(client_handle)
+    let async_flush = match args.async_flush {
+        Some(arg) => arg,
+        None => false,
+    };
+    let vfs = vfs::Vfs::new(client_handle, async_flush)
         .await
         .context("Failed to initialize vfs")?;
 
@@ -118,6 +122,9 @@ struct Args {
 
     #[arg(long)]
     app_hash: String,
+
+    #[arg(long)]
+    async_flush: Option<bool>,
 
     mount_point: PathBuf,
 }
