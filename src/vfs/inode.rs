@@ -1,6 +1,10 @@
 use crate::vfs::{Error, Result};
 
 use fuser::{FileAttr, FileType};
+use grammers_client::{
+    types::{Chat, Media, Message},
+    Client, InputMessage,
+};
 use sqlx::{FromRow, Pool, Row, Sqlite, SqlitePool};
 use std::{
     ffi::OsStr,
@@ -9,7 +13,9 @@ use std::{
 
 const BLOCK_SIZE: u32 = 512;
 
-const DB_FILE: &str = "sqlite://fuse.db?mode=rwc";
+const DB_CONN: &str = "sqlite://fuse.db?mode=rwc";
+const DB_FILE: &str = "fuse.db";
+const DB_TITLE: &str = "telegram-fuse db";
 
 #[derive(Debug, Clone, FromRow)]
 pub struct InodeAttr {
@@ -64,16 +70,44 @@ pub struct DirEntry {
 
 pub struct InodeTree {
     db: Pool<Sqlite>,
+    client: Client,
+    chat: Chat,
 }
 
 impl InodeTree {
-    pub async fn new() -> anyhow::Result<Self> {
+    pub async fn new(client: Client, chat: Chat) -> anyhow::Result<Self> {
+        Self::fetch_db(&client, &chat).await?;
+
         let this = Self {
-            db: SqlitePool::connect(DB_FILE).await?,
+            db: SqlitePool::connect(DB_CONN).await?,
+            client,
+            chat,
         };
         this.init().await?;
 
         Ok(this)
+    }
+
+    pub async fn destroy(&self) -> Result<()> {
+        let uploaded_file = self.client.upload_file(DB_FILE).await?;
+
+        let message = InodeTree::get_db_message_id(&self.client, &self.chat).await?;
+        if let Some(msg) = message {
+            self.client
+                .edit_message(
+                    &self.chat,
+                    msg.id(),
+                    InputMessage::text(DB_TITLE).file(uploaded_file),
+                )
+                .await?;
+        } else {
+            self.client
+                .send_message(&self.chat, InputMessage::text(DB_TITLE).file(uploaded_file))
+                .await?;
+        }
+        log::info!("Upload {} to Telegram", DB_FILE);
+
+        Ok(())
     }
 
     pub async fn lookup(&self, parent_ino: u64, child_name: &OsStr) -> Result<Option<InodeAttr>> {
@@ -510,6 +544,33 @@ impl InodeTree {
         }
 
         Ok(())
+    }
+
+    async fn fetch_db(client: &Client, chat: &Chat) -> Result<()> {
+        let message = InodeTree::get_db_message_id(client, chat).await?;
+        if let Some(msg) = message {
+            client
+                .download_media(&msg.media().unwrap(), DB_FILE)
+                .await?;
+            log::info!("Download {} from Telegram", DB_FILE);
+        }
+
+        Ok(())
+    }
+
+    async fn get_db_message_id(client: &Client, chat: &Chat) -> Result<Option<Message>> {
+        let mut messages = client.search_messages(chat).query(DB_TITLE);
+        while let Some(message) = messages.next().await? {
+            if message.text() == DB_TITLE {
+                if let Some(Media::Document(document)) = message.media() {
+                    if document.name() == DB_FILE {
+                        return Ok(Some(message));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 

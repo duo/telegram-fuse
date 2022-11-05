@@ -22,10 +22,11 @@ pub struct Vfs {
 impl Vfs {
     pub async fn new(client: Client, async_flush: bool) -> anyhow::Result<Arc<Self>> {
         let me = client.get_me().await?;
+        let chat = Chat::User(me);
 
         let this = Arc::new(Self {
-            inode_tree: InodeTree::new().await?,
-            cache: file::DiskCache::new(client, Chat::User(me)),
+            inode_tree: InodeTree::new(client.clone(), chat.clone()).await?,
+            cache: file::DiskCache::new(client.clone(), chat.clone()),
             async_flush,
         });
 
@@ -343,5 +344,10 @@ impl Vfs {
         } else {
             Err(Error::NotFound)
         }
+    }
+
+    pub async fn destroy(&self) -> Result<()> {
+        self.inode_tree.destroy().await?;
+        Ok(())
     }
 }

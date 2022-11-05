@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime},
 };
+use tokio::runtime;
 
 const GENERATION: u64 = 0;
 const NAME_LEN: u32 = 256;
@@ -40,6 +41,19 @@ impl Filesystem {
         let inner = self.inner.clone();
         tokio::task::spawn(f(inner));
     }
+
+    fn block<F, Fut>(&self, f: F)
+    where
+        F: FnOnce(Arc<FilesystemInner>) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let inner = self.inner.clone();
+        runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f(inner));
+    }
 }
 
 impl fuser::Filesystem for Filesystem {
@@ -55,6 +69,9 @@ impl fuser::Filesystem for Filesystem {
 
     fn destroy(&mut self) {
         log::info!("FUSE destroyed");
+        self.block(|inner| async move {
+            let _ = inner.vfs.destroy().await;
+        });
     }
 
     // TODO:

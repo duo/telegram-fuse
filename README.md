@@ -1,5 +1,5 @@
 # telegram-fuse
-A FUSE filesystem for Telegram storage.
+A FUSE filesystem for Telegram storage, modified from [onedrive-fuse](https://github.com/oxalica/onedrive-fuse).
 
 ## Usage
 ```
