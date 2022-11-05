@@ -8,7 +8,12 @@ use grammers_client::{
 use sqlx::{FromRow, Pool, Row, Sqlite, SqlitePool};
 use std::{
     ffi::OsStr,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use tokio::{
+    sync::{oneshot, Mutex},
+    time::{self, Instant},
 };
 
 const BLOCK_SIZE: u32 = 512;
@@ -16,6 +21,8 @@ const BLOCK_SIZE: u32 = 512;
 const DB_CONN: &str = "sqlite://fuse.db?mode=rwc";
 const DB_FILE: &str = "fuse.db";
 const DB_TITLE: &str = "telegram-fuse db";
+const DB_UPLOAD_START: u64 = 30;
+const DB_UPLOAD_INTERVAL: u64 = 300;
 
 #[derive(Debug, Clone, FromRow)]
 pub struct InodeAttr {
@@ -68,41 +75,81 @@ pub struct DirEntry {
     pub file_type: FileType,
 }
 
+struct TaskChannel {
+    terminate_tx: Option<oneshot::Sender<()>>,
+    done_rx: Option<oneshot::Receiver<()>>,
+}
+
 pub struct InodeTree {
     db: Pool<Sqlite>,
     client: Client,
     chat: Chat,
+    channel: Mutex<TaskChannel>,
 }
 
 impl InodeTree {
     pub async fn new(client: Client, chat: Chat) -> anyhow::Result<Self> {
         Self::fetch_db(&client, &chat).await?;
 
+        let (terminate_tx, terminate_rx) = oneshot::channel::<()>();
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+
+        let client_handle = Arc::new(client.clone());
+        let chat_handle = Arc::new(chat.clone());
+
         let this = Self {
             db: SqlitePool::connect(DB_CONN).await?,
             client,
             chat,
+            channel: Mutex::new(TaskChannel {
+                terminate_tx: Some(terminate_tx),
+                done_rx: Some(done_rx),
+            }),
         };
         this.init().await?;
+
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = InodeTree::upload_task(client_handle, chat_handle) => {},
+                _ = terminate_rx => {
+                    log::info!("Exit upload task");
+                    let _ = done_tx.send(());
+                }
+            }
+        });
 
         Ok(this)
     }
 
     pub async fn destroy(&self) -> Result<()> {
-        let uploaded_file = self.client.upload_file(DB_FILE).await?;
+        let mut guard = self.channel.lock().await;
+        if let Some(tx) = guard.terminate_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(rx) = guard.done_rx.take() {
+            let _ = rx.await;
+        }
 
-        let message = InodeTree::get_db_message_id(&self.client, &self.chat).await?;
+        InodeTree::upload_db(&self.client, &self.chat).await?;
+
+        Ok(())
+    }
+
+    async fn upload_db(client: &Client, chat: &Chat) -> Result<()> {
+        let uploaded_file = client.upload_file(DB_FILE).await?;
+
+        let message = InodeTree::get_db_message_id(client, chat).await?;
         if let Some(msg) = message {
-            self.client
+            client
                 .edit_message(
-                    &self.chat,
+                    chat,
                     msg.id(),
                     InputMessage::text(DB_TITLE).file(uploaded_file),
                 )
                 .await?;
         } else {
-            self.client
-                .send_message(&self.chat, InputMessage::text(DB_TITLE).file(uploaded_file))
+            client
+                .send_message(chat, InputMessage::text(DB_TITLE).file(uploaded_file))
                 .await?;
         }
         log::info!("Upload {} to Telegram", DB_FILE);
@@ -571,6 +618,15 @@ impl InodeTree {
         }
 
         Ok(None)
+    }
+
+    async fn upload_task(client: Arc<Client>, chat: Arc<Chat>) {
+        let start = Instant::now() + Duration::from_secs(DB_UPLOAD_START);
+        let mut interval = time::interval_at(start, Duration::from_secs(DB_UPLOAD_INTERVAL));
+        loop {
+            interval.tick().await;
+            let _ = InodeTree::upload_db(client.as_ref(), chat.as_ref()).await;
+        }
     }
 }
 
