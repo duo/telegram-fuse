@@ -16,6 +16,8 @@ pub enum Error {
     DirectoryNotEmpty,
     #[error("File exists")]
     FileExists,
+    #[error("File changed in remote side, please re-open it")]
+    Invalidated,
 
     // sql error
     #[error("sql error: {0}")]
@@ -24,6 +26,10 @@ pub enum Error {
     // grammers error
     #[error("grammers error: {0}")]
     Grammers(#[from] InvocationError),
+    #[error("Download failed")]
+    DownloadFailed,
+    #[error("Media invalid")]
+    MediaInvalid,
 
     // IO error.
     #[error("IO error: {0}")]
@@ -43,6 +49,7 @@ impl Error {
             Self::IsADirectory => libc::EISDIR,
             Self::DirectoryNotEmpty => libc::ENOTEMPTY,
             Self::FileExists => libc::EEXIST,
+            Self::Invalidated => libc::EPERM,
 
             // sql error
             Self::Sql(_) => {
@@ -57,6 +64,7 @@ impl Error {
                 log::debug!("{:?}", self);
                 libc::EIO
             }
+            Self::DownloadFailed | Self::MediaInvalid => libc::EIO,
 
             // Network errors.
             Self::Io(_) => {

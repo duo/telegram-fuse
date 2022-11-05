@@ -1,11 +1,11 @@
 use crate::vfs::{Error, Result};
+
+use fuser::{FileAttr, FileType};
+use sqlx::{FromRow, Pool, Row, Sqlite, SqlitePool};
 use std::{
     ffi::OsStr,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-
-use fuser::{FileAttr, FileType};
-use sqlx::{FromRow, Pool, Row, Sqlite, SqlitePool};
 
 const BLOCK_SIZE: u32 = 512;
 

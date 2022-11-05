@@ -1,19 +1,17 @@
+use fuser::FileType;
 use grammers_client::types::Chat;
 use grammers_client::Client;
 use std::ffi::OsStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fuser::FileType;
-
 mod error;
 mod file;
 mod inode;
 
 use error::{Error, Result};
-
-use self::file::FileCache;
-use self::inode::{DirEntry, InodeAttr, InodeTree};
+use file::FileCache;
+use inode::{DirEntry, InodeAttr, InodeTree};
 
 pub struct Vfs {
     inode_tree: InodeTree,
@@ -39,7 +37,7 @@ impl Vfs {
             log::trace!(target: "vfs::inode", "lookup: ino={} attr={:?}", v.ino, v);
             Ok(v)
         } else {
-            Err(error::Error::NotFound)
+            Err(Error::NotFound)
         }
     }
 
@@ -56,7 +54,7 @@ impl Vfs {
         if let Some(v) = attr {
             Ok(v)
         } else {
-            Err(error::Error::NotFound)
+            Err(Error::NotFound)
         }
     }
 
@@ -87,7 +85,7 @@ impl Vfs {
             log::trace!(target: "vfs::file", "open_file: ino={} fh={}", ino, fh);
             Ok(fh)
         } else {
-            Err(error::Error::NotFound)
+            Err(Error::MediaInvalid)
         }
     }
 
@@ -138,12 +136,12 @@ impl Vfs {
 
     pub async fn close_file(&self, ino: u64, fh: u64) -> Result<()> {
         if let Some(attr) = self.inode_tree.get(ino).await? {
-            self.cache.sync(&attr.remote_id, &attr.name).await?;
+            self.cache.flush(attr.remote_id, &attr.name, false).await?;
             log::trace!(target: "vfs::file", "close_file: ino={} fh={}", ino, fh);
 
             Ok(())
         } else {
-            Err(error::Error::NotFound)
+            Err(Error::NotFound)
         }
     }
 
@@ -168,10 +166,10 @@ impl Vfs {
                 );
                 Ok(ret)
             } else {
-                Err(error::Error::NotFound)
+                Err(Error::NotFound)
             }
         } else {
-            Err(error::Error::NotFound)
+            Err(Error::NotFound)
         }
     }
 
@@ -198,7 +196,7 @@ impl Vfs {
                 );
                 Ok(attr)
             }
-            Some(_) => Err(error::Error::FileExists),
+            Some(_) => Err(Error::FileExists),
         }
     }
 
@@ -233,10 +231,10 @@ impl Vfs {
         let name = name.to_str().unwrap();
 
         match lookup_result {
-            None => Err(error::Error::NotFound),
+            None => Err(Error::NotFound),
             Some(attr) => {
                 if !self.inode_tree.is_directory_empty(attr.ino as u64).await? {
-                    return Err(error::Error::DirectoryNotEmpty);
+                    return Err(Error::DirectoryNotEmpty);
                 }
 
                 self.inode_tree
@@ -259,7 +257,7 @@ impl Vfs {
         let name = name.to_str().unwrap();
 
         match lookup_result {
-            None => Err(error::Error::NotFound),
+            None => Err(Error::NotFound),
             Some(attr) => {
                 self.cache.delete(attr.remote_id).await?;
                 self.inode_tree
@@ -279,23 +277,19 @@ impl Vfs {
 
     pub async fn write_file(&self, ino: u64, fh: u64, offset: u64, data: &[u8]) -> Result<()> {
         if let Some(attr) = self.inode_tree.get(ino).await? {
-            if let Some(file) = self.cache.get(&attr.remote_id) {
-                let (new_size, mtime) = FileCache::write(&file, offset, data).await?;
+            let (new_size, mtime) = self.cache.write_file(attr.remote_id, offset, data).await?;
 
-                self.inode_tree.update_attr(ino, new_size, mtime).await?;
+            self.inode_tree.update_attr(ino, new_size, mtime).await?;
 
-                log::trace!(
-                    target: "vfs::file",
-                    "write_file: ino={} fh={} offset={} len={} new_size={} mtime={}",
-                    ino, fh, offset, data.len(), new_size, mtime
-                );
+            log::trace!(
+                target: "vfs::file",
+                "write_file: ino={} fh={} offset={} len={} new_size={} mtime={}",
+                ino, fh, offset, data.len(), new_size, mtime
+            );
 
-                Ok(())
-            } else {
-                Err(error::Error::NotFound)
-            }
+            Ok(())
         } else {
-            Err(error::Error::NotFound)
+            Err(Error::NotFound)
         }
     }
 
@@ -332,18 +326,18 @@ impl Vfs {
 
             Ok(attr)
         } else {
-            Err(error::Error::NotFound)
+            Err(Error::NotFound)
         }
     }
 
     pub async fn sync_file(&self, ino: u64) -> Result<()> {
         if let Some(attr) = self.inode_tree.get(ino).await? {
-            self.cache.sync(&attr.remote_id, &attr.name).await?;
+            self.cache.flush(attr.remote_id, &attr.name, true).await?;
             log::trace!(target: "vfs::file", "sync_file: ino={}", ino);
 
             Ok(())
         } else {
-            Err(error::Error::NotFound)
+            Err(Error::NotFound)
         }
     }
 }
