@@ -55,7 +55,7 @@ impl InodeAttr {
             mtime: UNIX_EPOCH + Duration::from_secs(self.mtime as u64),
             ctime: UNIX_EPOCH + Duration::from_secs(self.ctime as u64),
             crtime: UNIX_EPOCH + Duration::from_secs(self.crtime as u64),
-            kind: convert_file_type(self.kind),
+            kind: convert_file_type(self.kind.into()),
             perm: self.perm,
             nlink: self.nlink,
             uid: self.uid,
@@ -247,8 +247,8 @@ impl InodeTree {
             ctime: time,
             crtime: time,
             kind: match kind {
-                FileType::Directory => libc::S_IFDIR,
-                _ => libc::S_IFREG,
+                FileType::Directory => libc::S_IFDIR.try_into().unwrap(),
+                _ => libc::S_IFREG.try_into().unwrap(),
             },
             perm: match kind {
                 FileType::Directory => 0o777,
@@ -630,7 +630,22 @@ impl InodeTree {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn convert_file_type(kind: u16) -> FileType {
+    match kind {
+        libc::S_IFREG => FileType::RegularFile,
+        libc::S_IFSOCK => FileType::Socket,
+        libc::S_IFDIR => FileType::Directory,
+        libc::S_IFLNK => FileType::Symlink,
+        libc::S_IFBLK => FileType::BlockDevice,
+        libc::S_IFCHR => FileType::CharDevice,
+        libc::S_IFIFO => FileType::NamedPipe,
+        _ => FileType::RegularFile,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn convert_file_type(kind: u32) -> FileType {
     match kind {
         libc::S_IFREG => FileType::RegularFile,
         libc::S_IFSOCK => FileType::Socket,
