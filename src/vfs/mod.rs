@@ -20,17 +20,22 @@ pub struct Vfs {
 }
 
 impl Vfs {
-    pub async fn new(client: Client, async_flush: bool) -> anyhow::Result<Arc<Self>> {
-        let me = client.get_me().await?;
-        let chat = Chat::User(me);
+    pub async fn new(
+        client: Client,
+        chat_id: Option<i64>,
+        async_flush: bool,
+    ) -> anyhow::Result<Arc<Self>> {
+        if let Some(chat) = Vfs::get_chat(client.clone(), chat_id).await? {
+            let this = Arc::new(Self {
+                inode_tree: InodeTree::new(client.clone(), chat.clone()).await?,
+                cache: file::DiskCache::new(client.clone(), chat.clone()),
+                async_flush,
+            });
 
-        let this = Arc::new(Self {
-            inode_tree: InodeTree::new(client.clone(), chat.clone()).await?,
-            cache: file::DiskCache::new(client.clone(), chat.clone()),
-            async_flush,
-        });
-
-        Ok(this)
+            Ok(this)
+        } else {
+            panic!("Chat not found");
+        }
     }
 
     pub async fn lookup(&self, parent_ino: u64, child_name: &OsStr) -> Result<InodeAttr> {
@@ -349,5 +354,21 @@ impl Vfs {
     pub async fn destroy(&self) -> Result<()> {
         self.inode_tree.destroy().await?;
         Ok(())
+    }
+
+    async fn get_chat(client: Client, chat_id: Option<i64>) -> Result<Option<Chat>> {
+        if let Some(id) = chat_id {
+            let mut dialogs = client.clone().iter_dialogs();
+            while let Some(dialog) = dialogs.next().await? {
+                if dialog.chat().id() == id {
+                    return Ok(Some(dialog.chat().clone()));
+                }
+            }
+        } else {
+            let me = client.get_me().await?;
+            return Ok(Some(Chat::User(me)));
+        }
+
+        Ok(None)
     }
 }

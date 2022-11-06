@@ -80,7 +80,7 @@ async fn async_main(args: Args) -> Result<()> {
         Some(arg) => arg,
         None => false,
     };
-    let vfs = vfs::Vfs::new(client_handle, async_flush)
+    let vfs = vfs::Vfs::new(client_handle, args.chat_id, async_flush)
         .await
         .context("Failed to initialize vfs")?;
 
@@ -122,6 +122,9 @@ struct Args {
 
     #[arg(long)]
     app_hash: String,
+
+    #[arg(long)]
+    chat_id: Option<i64>,
 
     #[arg(long)]
     async_flush: Option<bool>,
